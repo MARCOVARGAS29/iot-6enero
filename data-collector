@@ -1,0 +1,202 @@
+import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
+import { GetCommand, PutCommand, DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
+
+const client = new DynamoDBClient({});
+const docClient = DynamoDBDocumentClient.from(client);
+
+const TABLE_NAME = "garaje_data";
+const STATE_TABLE = "IoTDeviceStates";
+
+export const handler = async (event) => {
+    console.log("Evento recibido:", JSON.stringify(event));
+
+    const thingName = event.thing_name;
+    const timestamp = event.timestamp;
+
+    // Conversión de timestamp a ISO 8601
+    const timestampISO = new Date(timestamp).toISOString();
+
+    // Conversión a formato amigable con hora latinoamericana
+    const timestampLatino = new Date(timestamp).toLocaleString("es-BO", {
+        timeZone: "America/La_Paz",
+        year: "numeric",
+        month: "long",
+        day: "numeric",
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit",
+    });
+
+    const currentDistance = event.distancia;
+    const currentMQ2Value = event.mq2_valor;
+    const currentMQ2Voltage = event.mq2_voltaje;
+    const currentEstadoPuerta = event.estado_puerta;
+
+    // Recuperar el estado previo de la tabla IoTDeviceStates
+    let previousState = {
+        RegisteredAsBelowThreshold: false,
+        MQ2AboveThreshold: false,
+    };
+
+    try {
+        const response = await docClient.send(
+            new GetCommand({
+                TableName: STATE_TABLE,
+                Key: { ThingName: thingName },
+            })
+        );
+        previousState = response.Item || {
+            RegisteredAsBelowThreshold: false,
+            MQ2AboveThreshold: false,
+        };
+        console.log("Estado previo recuperado:", previousState);
+    } catch (error) {
+        console.error("Error al recuperar el estado previo:", error);
+    }
+
+    const isBelowThreshold = previousState.RegisteredAsBelowThreshold;
+    const isMQ2AboveThreshold = previousState.MQ2AboveThreshold;
+
+    // **Lógica para distancias**
+    if (currentEstadoPuerta === 1 && currentDistance <= 10) {
+        if (isBelowThreshold) {
+            console.log("La distancia ya está registrada como menor a 10. No se publica.");
+        } else {
+            // Publicar datos de distancia
+            try {
+                await docClient.send(
+                    new PutCommand({
+                        TableName: TABLE_NAME,
+                        Item: {
+                            timestamp: timestamp,
+                            timestamp_iso: timestampISO,
+                            timestamp_latino: timestampLatino,
+                            thing_name: thingName,
+                            distancia: currentDistance,
+                            mq2_valor: currentMQ2Value,
+                            mq2_voltaje: currentMQ2Voltage,
+                            estado_puerta: currentEstadoPuerta,
+                        },
+                    })
+                );
+                console.log("Datos de distancia publicados correctamente.");
+            } catch (error) {
+                console.error("Error al publicar los datos de distancia:", error);
+            }
+
+            // Actualizar estado de distancia a `true`
+            try {
+                await docClient.send(
+                    new PutCommand({
+                        TableName: STATE_TABLE,
+                        Item: {
+                            ThingName: thingName,
+                            RegisteredAsBelowThreshold: true,
+                            MQ2AboveThreshold: isMQ2AboveThreshold,
+                        },
+                    })
+                );
+                console.log("Estado de distancia actualizado a 'true'.");
+            } catch (error) {
+                console.error("Error al actualizar el estado de distancia a 'true':", error);
+            }
+        }
+    }
+
+    if (currentDistance > 10) {
+        if (!isBelowThreshold) {
+            console.log("El estado de distancia ya está en 'false'. No se requiere acción.");
+        } else {
+            // Resetear estado de distancia a `false`
+            try {
+                await docClient.send(
+                    new PutCommand({
+                        TableName: STATE_TABLE,
+                        Item: {
+                            ThingName: thingName,
+                            RegisteredAsBelowThreshold: false,
+                            MQ2AboveThreshold: isMQ2AboveThreshold,
+                        },
+                    })
+                );
+                console.log("Estado de distancia reseteado a 'false'.");
+            } catch (error) {
+                console.error("Error al resetear el estado de distancia a 'false':", error);
+            }
+        }
+    }
+
+    // Lógica para valores de MQ2 mayores a 200
+if (currentMQ2Value > 200) {
+    if (!isMQ2AboveThreshold) {
+        // Publicar datos de MQ2
+        try {
+            console.log("Publicando datos de MQ2...");
+            await docClient.send(
+                new PutCommand({
+                    TableName: TABLE_NAME,
+                    Item: {
+                        timestamp: timestamp,
+                        timestamp_iso: timestampISO,
+                        timestamp_latino: timestampLatino,
+                        thing_name: thingName,
+                        distancia: currentDistance,
+                        mq2_valor: currentMQ2Value,
+                        mq2_voltaje: currentMQ2Voltage,
+                        estado_puerta: currentEstadoPuerta,
+                    },
+                })
+            );
+            console.log("Datos de MQ2 publicados correctamente.");
+        } catch (error) {
+            console.error("Error al publicar los datos de MQ2:", error);
+        }
+
+        // Actualizar estado de MQ2 a `true`
+        try {
+            console.log("Actualizando estado de MQ2 a 'true'...");
+            await docClient.send(
+                new PutCommand({
+                    TableName: STATE_TABLE,
+                    Item: {
+                        ThingName: thingName,
+                        RegisteredAsBelowThreshold: isBelowThreshold,
+                        MQ2AboveThreshold: true,
+                    },
+                })
+            );
+            console.log("Estado de MQ2 actualizado a 'true'.");
+        } catch (error) {
+            console.error("Error al actualizar el estado de MQ2 a 'true':", error);
+        }
+    } else {
+        console.log("El valor MQ2 ya está registrado como mayor a 200. No se publica.");
+    }
+} else {
+    if (isMQ2AboveThreshold) {
+        // Resetear estado de MQ2 a `false`
+        try {
+            console.log("Reseteando estado de MQ2 a 'false'...");
+            await docClient.send(
+                new PutCommand({
+                    TableName: STATE_TABLE,
+                    Item: {
+                        ThingName: thingName,
+                        RegisteredAsBelowThreshold: isBelowThreshold,
+                        MQ2AboveThreshold: false,
+                    },
+                })
+            );
+            console.log("Estado de MQ2 reseteado a 'false'.");
+        } catch (error) {
+            console.error("Error al resetear el estado de MQ2 a 'false':", error);
+        }
+    } else {
+        console.log("El estado MQ2 ya está en 'false'. No se requiere acción.");
+    }
+}
+
+
+    console.log("Ejecución completada.");
+    return { status: "Processed" };
+};
