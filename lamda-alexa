@@ -1,0 +1,296 @@
+const Alexa = require('ask-sdk-core');
+const AWS = require('aws-sdk');
+const IotData = new AWS.IotData({endpoint: 'aknspsbqjz9vb-ats.iot.us-east-2.amazonaws.com'});
+const dynamoDb = new AWS.DynamoDB();
+
+const TurnOffParams = {
+    thingName: 'esp32',
+    payload: '{"state": {"desired": {"ESTADO_PUERTA": 0}}}',
+};
+
+const TurnOnParams = {
+    thingName: 'esp32',
+    payload: '{"state": {"desired": {"ESTADO_PUERTA": 1}}}',
+};
+
+const ShadowParams = {
+    thingName: 'esp32',
+};
+
+function getShadowPromise(params) {
+    return new Promise((resolve, reject) => {
+        IotData.getThingShadow(params, (err, data) => {
+            if (err) {
+                console.log(err, err.stack);
+                reject('Failed to get thing shadow ${err.errorMessage}');
+            } else {
+                resolve(JSON.parse(data.payload));
+            }
+        });
+    });
+}
+
+const AbrirIntentHandler = {
+    canHandle(handlerInput) {
+        return Alexa.getRequestType(handlerInput.requestEnvelope) === 'IntentRequest'
+            && Alexa.getIntentName(handlerInput.requestEnvelope) === 'TurnOnIntent';
+    },
+    handle(handlerInput) {
+        var speakOutput = "Error";
+        IotData.updateThingShadow(TurnOnParams, function(err, data) {
+            if (err) console.log(err);
+        });
+      
+        speakOutput = 'Solicitaste abrir!';
+
+        return handlerInput.responseBuilder
+            .speak(speakOutput)
+            .reprompt(speakOutput)
+            .getResponse();
+    }
+};
+
+const CerrarIntentHandler = {
+    canHandle(handlerInput) {
+        return Alexa.getRequestType(handlerInput.requestEnvelope) === 'IntentRequest'
+            && Alexa.getIntentName(handlerInput.requestEnvelope) === 'TurnOffIntent';
+    },
+    handle(handlerInput) {
+        var speakOutput = "Error";
+        IotData.updateThingShadow(TurnOffParams, function(err, data) {
+            if (err) console.log(err);
+        });
+      
+        speakOutput = 'Solicitaste cerrar!';
+
+        return handlerInput.responseBuilder
+            .speak(speakOutput)
+            .reprompt(speakOutput)
+            .getResponse();
+    }
+};
+
+const GetMQValueIntentHandler = {
+    canHandle(handlerInput) {
+        return Alexa.getRequestType(handlerInput.requestEnvelope) === 'IntentRequest'
+            && Alexa.getIntentName(handlerInput.requestEnvelope) === 'GetMQValueIntent';
+    },
+    async handle(handlerInput) {
+        let mq2Value = 'desconocido'; // Valor inicial por defecto
+        try {
+            // Obtener el estado actual del Thing Shadow
+            const shadowData = await getShadowPromise(ShadowParams);
+
+            // Extraer el valor del sensor MQ-2 si está disponible
+            if (shadowData && shadowData.state && shadowData.state.reported) {
+                mq2Value = shadowData.state.reported.MQ2_VALOR || 'desconocido';
+            }
+        } catch (error) {
+            console.error("Error al manejar GetMQValueIntent:", error);
+        }
+
+        // Generar el mensaje de respuesta basado en el valor del sensor
+        let speakOutput = 'Hubo un problema al obtener el valor del sensor de humo.';
+        if (mq2Value !== 'desconocido') {
+            speakOutput = `El valor actual del sensor de humo es ${mq2Value}.`;
+        } else {
+            speakOutput = 'No se pudo consultar el valor del sensor de humo. Por favor, intenta nuevamente más tarde.';
+        }
+
+        return handlerInput.responseBuilder
+            .speak(speakOutput)
+            .reprompt(speakOutput)
+            .getResponse();
+    }
+};
+
+// Normalización de acciones
+const normalizeAction = (action) => {
+    const validActions = {
+        encender: ['encender', 'prender', 'activar'],
+        apagar: ['apagar', 'desactivar']
+    };
+
+    for (const [normalizedAction, synonyms] of Object.entries(validActions)) {
+        if (synonyms.includes(action)) {
+            return normalizedAction;
+        }
+    }
+
+    return null; // Acción no válida
+};
+
+// Handler para controlar dispositivos
+const ControlDeviceIntentHandler = {
+    canHandle(handlerInput) {
+        return Alexa.getRequestType(handlerInput.requestEnvelope) === 'IntentRequest' &&
+               Alexa.getIntentName(handlerInput.requestEnvelope) === 'ControlDeviceIntent';
+    },
+    async handle(handlerInput) {
+        const { requestEnvelope } = handlerInput;
+
+        let action = Alexa.getSlotValue(requestEnvelope, 'action');
+        const device = Alexa.getSlotValue(requestEnvelope, 'device');
+
+        action = normalizeAction(action);
+        let speakOutput = `No se encontró el dispositivo ${device}.`;
+
+        if (!action || !device) {
+            speakOutput = 'No entendí la acción o el dispositivo. Intenta de nuevo.';
+            return handlerInput.responseBuilder
+                .speak(speakOutput)
+                .reprompt('¿Qué deseas hacer?')
+                .getResponse();
+        }
+
+        try {
+            const params = {
+                TableName: 'Dispositivos',
+                Key: { 'device_name': { S: device } }
+            };
+
+            const result = await dynamoDb.getItem(params).promise();
+
+            if (result.Item) {
+                const currentState = result.Item.state.S;
+                const newState = action === 'encender' ? 'on' : 'off';
+
+                if (newState !== currentState) {
+                    const updateParams = {
+                        TableName: 'Dispositivos',
+                        Key: { 'device_name': { S: device } },
+                        UpdateExpression: 'SET #state = :newState',
+                        ExpressionAttributeNames: { '#state': 'state' },
+                        ExpressionAttributeValues: { ':newState': { S: newState } }
+                    };
+
+                    await dynamoDb.updateItem(updateParams).promise();
+                    speakOutput = `El dispositivo ${device} ha sido ${action} exitosamente.`;
+                } else {
+                    speakOutput = `El dispositivo ${device} ya está ${currentState}.`;
+                }
+            }
+        } catch (error) {
+            console.error("Error al manejar ControlDeviceIntent:", error);
+            speakOutput = `Hubo un problema al intentar ${action} el dispositivo ${device}.`;
+        }
+
+        return handlerInput.responseBuilder
+            .speak(speakOutput)
+            .reprompt('¿Puedo ayudarte con algo más?')
+            .getResponse();
+    }
+};
+
+// Handler para consultar el estado de un dispositivo
+const StateIntentHandler = {
+    canHandle(handlerInput) {
+        return Alexa.getRequestType(handlerInput.requestEnvelope) === 'IntentRequest' &&
+               Alexa.getIntentName(handlerInput.requestEnvelope) === 'StateIntent';
+    },
+    async handle(handlerInput) {
+        const device = Alexa.getSlotValue(handlerInput.requestEnvelope, 'device');
+        let speakOutput = `No se encontró el dispositivo ${device}.`;
+
+        if (!device) {
+            speakOutput = 'No entendí el dispositivo. Intenta de nuevo.';
+            return handlerInput.responseBuilder
+                .speak(speakOutput)
+                .reprompt('¿Qué dispositivo deseas consultar?')
+                .getResponse();
+        }
+
+        try {
+            const params = {
+                TableName: 'Dispositivos',
+                Key: { 'device_name': { S: device } }
+            };
+
+            const result = await dynamoDb.getItem(params).promise();
+
+            if (result.Item) {
+                const currentState = result.Item.state.S;
+                speakOutput = `El estado del dispositivo ${device} es ${currentState}.`;
+            }
+        } catch (error) {
+            console.error("Error al manejar StateIntent:", error);
+            speakOutput = `Hubo un problema al obtener el estado del dispositivo ${device}.`;
+        }
+
+        return handlerInput.responseBuilder
+            .speak(speakOutput)
+            .reprompt('¿Puedo ayudarte con algo más?')
+            .getResponse();
+    }
+};
+
+// Handler para listar dispositivos
+const ListDevicesIntentHandler = {
+    canHandle(handlerInput) {
+        return Alexa.getRequestType(handlerInput.requestEnvelope) === 'IntentRequest' &&
+               Alexa.getIntentName(handlerInput.requestEnvelope) === 'ListDevicesIntent';
+    },
+    async handle(handlerInput) {
+        let speakOutput = 'No se encontraron dispositivos registrados.';
+
+        try {
+            const params = {
+                TableName: 'Dispositivos'
+            };
+
+            const result = await dynamoDb.scan(params).promise();
+            const devices = result.Items.map(item => item.device_name.S);
+
+            if (devices.length > 0) {
+                speakOutput = `Tienes los siguientes dispositivos registrados: ${devices.join(', ')}.`;
+            }
+        } catch (error) {
+            console.error("Error al manejar ListDevicesIntent:", error);
+            speakOutput = 'Hubo un problema al obtener la lista de dispositivos. Por favor, intenta nuevamente más tarde.';
+        }
+
+        return handlerInput.responseBuilder
+            .speak(speakOutput)
+            .reprompt('¿Puedo ayudarte con algo más?')
+            .getResponse();
+    }
+};
+
+const LaunchRequestHandler = {
+    canHandle(handlerInput) {
+        return Alexa.getRequestType(handlerInput.requestEnvelope) === 'LaunchRequest';
+    },
+    handle(handlerInput) {
+        const speakOutput = 'Bienvenido a tu controlador de dispositivos inteligentes. Puedes encender, apagar y consultar el estado de los dispositivos. ¿Qué deseas hacer?';
+
+        return handlerInput.responseBuilder
+            .speak(speakOutput)
+            .reprompt(speakOutput)
+            .getResponse();
+    }
+};
+
+const ErrorHandler = {
+    canHandle() {
+        return true;
+    },
+    handle(handlerInput, error) {
+        console.error("Error global:", error);
+        return handlerInput.responseBuilder
+            .speak('Ocurrió un error. Intenta de nuevo.')
+            .getResponse();
+    }
+};
+
+exports.handler = Alexa.SkillBuilders.custom()
+    .addRequestHandlers(
+        LaunchRequestHandler,
+        ControlDeviceIntentHandler,
+        StateIntentHandler,
+        ListDevicesIntentHandler,
+        CerrarIntentHandler,
+        AbrurIntentHandler,
+        GetMQValueIntentHandler
+    )
+    .addErrorHandlers(ErrorHandler)
+    .lambda();
