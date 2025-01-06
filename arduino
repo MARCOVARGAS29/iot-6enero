@@ -1,0 +1,264 @@
+//codigo bueno
+#include <WiFi.h>
+#include <WiFiClientSecure.h>
+#include <PubSubClient.h>
+#include <ArduinoJson.h>
+#include <ESP32Servo.h>
+
+#define SERVO_PIN 18
+#define MQ2_PIN 35 // Pin analógico del sensor MQ-2
+
+Servo servo;
+
+const char * MQTT_BROKER_HOST = "aknspsbqjz9vb-ats.iot.us-east-2.amazonaws.com";
+const int MQTT_BROKER_PORT = 8883;
+const char * MQTT_CLIENT_ID = "ESP-32";                                               // Unique CLIENT_ID
+const char * UPDATE_TOPIC = "$aws/things/esp32/shadow/update";              // publish
+const char * SUBSCRIBE_TOPIC = "$aws/things/esp32/shadow/update/delta";  // subscribe
+
+const char AMAZON_ROOT_CA1[] PROGMEM = R"EOF(
+
+
+-----BEGIN CERTIFICATE-----
+MIIDQTCCAimgAwIBAgITBmyfz5m/jAo54vB4ikPmljZbyjANBgkqhkiG9w0BAQsF
+ADA5MQswCQYDVQQGEwJVUzEPMA0GA1UEChMGQW1hem9uMRkwFwYDVQQDExBBbWF6
+b24gUm9vdCBDQSAxMB4XDTE1MDUyNjAwMDAwMFoXDTM4MDExNzAwMDAwMFowOTEL
+MAkGA1UEBhMCVVMxDzANBgNVBAoTBkFtYXpvbjEZMBcGA1UEAxMQQW1hem9uIFJv
+b3QgQ0EgMTCCASIwDQYJKoZIhvcNAQEBBQADggEPADCCAQoCggEBALJ4gHHKeNXj
+ca9HgFB0fW7Y14h29Jlo91ghYPl0hAEvrAIthtOgQ3pOsqTQNroBvo3bSMgHFzZM
+9O6II8c+6zf1tRn4SWiw3te5djgdYZ6k/oI2peVKVuRF4fn9tBb6dNqcmzU5L/qw
+IFAGbHrQgLKm+a/sRxmPUDgH3KKHOVj4utWp+UhnMJbulHheb4mjUcAwhmahRWa6
+VOujw5H5SNz/0egwLX0tdHA114gk957EWW67c4cX8jJGKLhD+rcdqsq08p8kDi1L
+93FcXmn/6pUCyziKrlA4b9v7LWIbxcceVOF34GfID5yHI9Y/QCB/IIDEgEw+OyQm
+jgSubJrIqg0CAwEAAaNCMEAwDwYDVR0TAQH/BAUwAwEB/zAOBgNVHQ8BAf8EBAMC
+AYYwHQYDVR0OBBYEFIQYzIU07LwMlJQuCFmcx7IQTgoIMA0GCSqGSIb3DQEBCwUA
+A4IBAQCY8jdaQZChGsV2USggNiMOruYou6r4lK5IpDB/G/wkjUu0yKGX9rbxenDI
+U5PMCCjjmCXPI6T53iHTfIUJrU6adTrCC2qJeHZERxhlbI1Bjjt/msv0tadQ1wUs
+N+gDS63pYaACbvXy8MWy7Vu33PqUXHeeE6V/Uq2V8viTO96LXFvKWlJbYK8U90vv
+o/ufQJVtMVT8QtPHRh8jrdkPSHCa2XV4cdFyQzR1bldZwgJcJmApzyMZFo6IQ6XU
+5MsI+yMRQ+hDKXJioaldXgjUkK642M4UwtBV8ob2xJNDd2ZhwLnoQdeXeGADbkpy
+rqXRfboQnoZsG4q5WTP468SQvvG5
+-----END CERTIFICATE-----
+
+)EOF";
+
+const char CERTIFICATE[] PROGMEM = R"KEY(
+-----BEGIN CERTIFICATE-----
+MIIDWjCCAkKgAwIBAgIVANF3JU4L/fayguaz/SFn1R5XAU/GMA0GCSqGSIb3DQEB
+CwUAME0xSzBJBgNVBAsMQkFtYXpvbiBXZWIgU2VydmljZXMgTz1BbWF6b24uY29t
+IEluYy4gTD1TZWF0dGxlIFNUPVdhc2hpbmd0b24gQz1VUzAeFw0yNDExMDgyMDIw
+NTBaFw00OTEyMzEyMzU5NTlaMB4xHDAaBgNVBAMME0FXUyBJb1QgQ2VydGlmaWNh
+dGUwggEiMA0GCSqGSIb3DQEBAQUAA4IBDwAwggEKAoIBAQDliZaYPMYvjXVk8iSB
+y3cMzhZ4yKbyLjcd3KnlW98IBlyAXq5RxepJi1DDRg05JJYmXrtH3zRI5NnPcvO1
+FV8pn5Jsgr3dRYs1EFSoOLkpOgNUsDvRPrYfmmilmJXtLxP3RLCXpH0Bu52BLFPm
+0TN1jbgsqvgQ9dEIq/kpCNSFUUlbGXwg3FK+5dH/4qvBWj9J90tGxZgPqM/DofuJ
+irEiPGKUcocIU4cgUyFOTtaoemvwbDLWojqePn1CPpu9CBEoBC17ZDsHadpk2A6j
+rKz+FOjgRlgopKoaogEBPxgHfCvak3nmsGD6O/potn1g0fMbBtZiUDJvSxeRZmsa
+xmPnAgMBAAGjYDBeMB8GA1UdIwQYMBaAFFU0VjGoKddAKUyfsxWzOMLbfJuGMB0G
+A1UdDgQWBBQdiDA0Uy3SMot5Qq4fy/3zyeBMSjAMBgNVHRMBAf8EAjAAMA4GA1Ud
+DwEB/wQEAwIHgDANBgkqhkiG9w0BAQsFAAOCAQEATkgS13riyeWhXaxCBe74Lovl
+oRleQxcgb3rVUeTq6kLUZ/t2S0owddh4LCvyFk9rMxxAn1WJiji3MIpD75/L2js7
+L8pfZSbaNfIYd9dgEkkszuPJSBOYdX/1pQVkMurqyV5mY822k/1U/Jvq+FcqtRwD
+l3TLzmhhMT92ll0oMDRgwMoPXHzA26vWxCNd5UjPFJOG4eOiGabflLQaF7yDwm32
+vnWAd5V4yITcmptC709TZ2ihnBWNRHldA4IGqMjzokIn0B38DRDPh/WCfqsrgAFa
+cThAp0c2NnDt5DctkjG75Kdss2FBhpCgAQEmDbtjyVlW7JJk2V2zKlzgyev87A==
+-----END CERTIFICATE-----
+
+)KEY";
+
+const char PRIVATE_KEY[] PROGMEM = R"KEY(
+-----BEGIN RSA PRIVATE KEY-----
+MIIEpgIBAAKCAQEA5YmWmDzGL411ZPIkgct3DM4WeMim8i43Hdyp5VvfCAZcgF6u
+UcXqSYtQw0YNOSSWJl67R980SOTZz3LztRVfKZ+SbIK93UWLNRBUqDi5KToDVLA7
+0T62H5popZiV7S8T90Swl6R9AbudgSxT5tEzdY24LKr4EPXRCKv5KQjUhVFJWxl8
+INxSvuXR/+KrwVo/SfdLRsWYD6jPw6H7iYqxIjxilHKHCFOHIFMhTk7WqHpr8Gwy
+1qI6nj59Qj6bvQgRKAQte2Q7B2naZNgOo6ys/hTo4EZYKKSqGqIBAT8YB3wr2pN5
+5rBg+jv6aLZ9YNHzGwbWYlAyb0sXkWZrGsZj5wIDAQABAoIBAQDahp/ZtdpUgU8n
+WKRK8aMYjMe2HAlcfYU5p9ATrOBr6mp8SCebcFn5xGmSTwndwig0xXF1HlnPoBiB
+OIYuevdLUED9j4cktsWuMir2sHIPfsyW/uUj85k+AynnpZnu4igW+81HwXDFipGL
+3eDO2ZItM0wJMofS1cQ5hkhCucZiWFADCk+Sw+uJXlmKTje+8Q0MAyj4DbfZs8Ga
+pPkq/3bpq7wLgun4901cZ7bLCtjZcGNv3YL0IcwNaqR9dVdOJa7GZ5eo4HBQyA0t
+50mhs8wR2nLYx7okJsJpeA/VKKhH/q04MXqjhNgT5qPjIjuVa3NlKX8X8gfy3bb1
+8QbA2wAxAoGBAP1eDr0BiVCutMDyjlFgmG2/v3xK3IdHGhE9MlEPevjNbvwZA4/T
+KJv+RNaBQDYczA+kOHVv1xlPGiZQAeoyfGiRafLtHeYmJdz5xzHCIZxmhmndVdnv
+OjAI6ZZA+SZcBKdBdgEro/ftHpn0C4MpmU3KoZC+DgPkH3iysFdbKaTPAoGBAOfs
+JPdrbeGyiVfzG6pafAJ8ENmzQ3fHqSAcHcMacBWDtaYqCKJdp7kSv0RihxaYv41+
++R/yAYog1AkeoeuShqYpvVA9AoQXsNGV9xXeM5wav6sC6ZaG6P/eLzgFNt4h8zgb
+H/JIYzHwwXx/KbVr9h69k9grz0PF6i6iFcLL2kVpAoGBAOn3vHZu/8Wgv0vZ8PBW
+2gum4QW+/6xwTTMUJu3R9MXitxVXaAGdhcefYyQOUSRnLU1YYcaYk7JMaKJuiYYi
+Pt41QfhRXKXWHmrTwU1CrtUFnCQQfyH0FvCamlHlB+6TVLy652SnTxA4SGT0htkF
+RgsfDlliGAEh3KoRoGPazDbjAoGBAIWpGNznMxqiFHl1iHozT8j2y5dLsxRzI0t4
+KMbqk7IyiBvNmdBJfYIyBb1Zs1UYjzzy8oywoqaCqPDgkJz9g1B8ObjmkG6kYKlJ
+bm9R8hiDafca5Jh2BA6CdGAq0SZQFqY9K7oscc60XC5t8xG1uNCanXw2M2txwrdB
+fp0XcyIRAoGBAMoG9/JT8kyvmYvszIEZaoh1QVhZF1ekkSWYuUEMnwILj7HBMsT1
+6lvOaI5WSa2ADKMpSujq30hgUXijRZ/v8B7SRdDp+y/GEjejIeIT2qppknnGqmNz
+esr/l3puzhMUl7WswAFEBrioLyT0PaiEqiHyflGR+hMRmTfDFBGXFOTL
+-----END RSA PRIVATE KEY-----
+
+)KEY";
+
+int LED = 2;
+WiFiClientSecure wiFiClient;
+PubSubClient mqttClient(wiFiClient);
+StaticJsonDocument<JSON_OBJECT_SIZE(64)> inputDoc;
+StaticJsonDocument<JSON_OBJECT_SIZE(4)> outputDoc;
+char outputBuffer[128];
+
+unsigned int DOOR_STATUS = 0; // Estado de la puerta (0: cerrado, 1: abierto)
+int echoPin = 27; // Pin del sensor echo
+int triggerPin = 26; // Pin de trig del sensor
+float DISTANCE = 0.00; // Distancia medida
+float previousDistance = 0.00; // Última distancia registrada
+float THRESHOLD = 10.0; // Umbral de cambio significativo
+unsigned long lastPublishTime = 0;
+const unsigned long PUBLISH_INTERVAL = 5000; // Intervalo de publicación en milisegundos
+
+// Valores del sensor MQ-2
+int MQ2_VALUE = 0;
+float MQ2_VOLTAGE = 0.0;
+
+void liftServo() {
+    servo.attach(SERVO_PIN);
+    servo.write(180);
+    delay(250);
+    servo.write(90);
+    delay(1000);
+    servo.detach();
+}
+
+void lowerServo() {
+    servo.attach(SERVO_PIN);
+    servo.write(0);
+    delay(250);
+    servo.write(90);
+    delay(1000);
+    servo.detach();
+}
+
+long readUltrasonicDistance(int triggerPin, int echoPin) {
+    pinMode(triggerPin, OUTPUT);
+    digitalWrite(triggerPin, LOW);
+    delayMicroseconds(2);
+    digitalWrite(triggerPin, HIGH);
+    delayMicroseconds(10);
+    digitalWrite(triggerPin, LOW);
+    pinMode(echoPin, INPUT);
+    long duration = pulseIn(echoPin, HIGH);
+    delay(1000);
+    return duration;
+}
+
+void reportStatus() {
+    outputDoc["state"]["reported"]["ESTADO_PUERTA"] = DOOR_STATUS;
+    outputDoc["state"]["reported"]["DISTANCIA"] = DISTANCE;
+    outputDoc["state"]["reported"]["MQ2_VALOR"] = MQ2_VALUE;
+    outputDoc["state"]["reported"]["MQ2_VOLTAJE"] = MQ2_VOLTAGE;
+    serializeJson(outputDoc, outputBuffer);
+    mqttClient.publish(UPDATE_TOPIC, outputBuffer);
+}
+
+void door() {
+    if (DOOR_STATUS == 1) { // Estado "abierto"
+        digitalWrite(LED, HIGH);
+        liftServo();
+    } else { // Estado "cerrado"
+        digitalWrite(LED, LOW);
+        lowerServo();
+    }
+    delay(1000);
+    reportStatus();
+}
+
+void callback(const char *topic, byte *payload, unsigned int length) {
+    String message;
+    for (int i = 0; i < length; i++) {
+        message += String((char) payload[i]);
+    }
+    Serial.println("Mensaje del topic " + String(topic) + ": " + message);
+
+    DeserializationError err = deserializeJson(inputDoc, payload);
+    if (!err) {
+        if (String(topic) == SUBSCRIBE_TOPIC) {
+            unsigned int newEstadoPuerta = inputDoc["state"]["ESTADO_PUERTA"].as<int8_t>();
+            if (newEstadoPuerta != DOOR_STATUS) 
+            {
+                DOOR_STATUS = newEstadoPuerta;
+                door();
+            }
+        }
+    }
+}
+
+void setup() {
+    pinMode(LED, OUTPUT);
+    Serial.begin(115200);
+    servo.attach(SERVO_PIN);
+
+    pinMode(MQ2_PIN, INPUT); // Configura el pin del MQ-2
+
+    // Solicitamos al usuario ingresar las credenciales Wi-Fi
+    String ssid, password;
+    Serial.println("Introduce el SSID de la red Wi-Fi:");
+    while (Serial.available() == 0) {}
+    ssid = Serial.readStringUntil('\n');
+    
+    Serial.println("Introduce la contraseña de la red Wi-Fi:");
+    while (Serial.available() == 0) {}
+    password = Serial.readStringUntil('\n');
+
+    Serial.print("Conectando a ");
+    Serial.println(ssid);
+    WiFi.begin(ssid.c_str(), password.c_str());
+    while (WiFi.status() != WL_CONNECTED) {
+        delay(200);
+        Serial.print(".");
+    }
+    Serial.println(" Conectado!");
+
+    wiFiClient.setCACert(AMAZON_ROOT_CA1);
+    wiFiClient.setCertificate(CERTIFICATE);
+    wiFiClient.setPrivateKey(PRIVATE_KEY);
+
+    mqttClient.setServer(MQTT_BROKER_HOST, MQTT_BROKER_PORT);
+    mqttClient.setCallback(callback);
+
+    Serial.print("Conectando al broker MQTT ");
+    if (mqttClient.connect(MQTT_CLIENT_ID)) {
+        Serial.println(" Conectado!");
+        delay(100);
+        mqttClient.subscribe(SUBSCRIBE_TOPIC);
+        Serial.println("Suscrito al topic: " + String(SUBSCRIBE_TOPIC));
+        delay(100);
+        reportStatus();
+    }
+}
+
+void loop() {
+    DISTANCE = 0.01723 * readUltrasonicDistance(triggerPin, echoPin);
+
+    // Sensor MQ-2
+    MQ2_VALUE = analogRead(MQ2_PIN);
+    MQ2_VOLTAGE = MQ2_VALUE * (3.3 / 4095.0);
+
+    unsigned long currentTime = millis();
+
+    if (mqttClient.connected()) {
+        // Publicar solo si hay un cambio significativo o ha pasado el intervalo de tiempo
+        if (abs(DISTANCE - previousDistance) >= THRESHOLD || currentTime - lastPublishTime >= PUBLISH_INTERVAL) {
+            previousDistance = DISTANCE;
+            lastPublishTime = currentTime;
+            reportStatus();
+
+            Serial.print("DISTANCE: ");
+            Serial.println(DISTANCE);
+            Serial.print("MQ2 VALUE: ");
+            Serial.print(MQ2_VALUE);
+            Serial.print(" | MQ2 VOLTAGE: ");
+            Serial.println(MQ2_VOLTAGE);
+        }
+        mqttClient.loop();
+    } else {
+        Serial.println("No conectado al broker MQTT!");
+        delay(800);
+    }
+}
